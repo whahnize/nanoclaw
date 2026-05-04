@@ -23,6 +23,10 @@ export interface AllowedRoot {
   path: string;
   // Whether read-write mounts are allowed under this root
   allowReadWrite: boolean;
+  // If true, this root is auto-mounted into every group's container
+  // (skipped if the group already declares a mount with the same containerPath
+  //  or if the host path does not exist).
+  autoMount?: boolean;
   // Optional description for documentation
   description?: string;
 }

@@ -25,8 +25,8 @@ import {
   stopContainer,
 } from './container-runtime.js';
 import { OneCLI } from '@onecli-sh/sdk';
-import { validateAdditionalMounts } from './mount-security.js';
-import { RegisteredGroup } from './types.js';
+import { getAutoMounts, validateAdditionalMounts } from './mount-security.js';
+import { AdditionalMount, RegisteredGroup } from './types.js';
 
 const onecli = new OneCLI({ url: ONECLI_URL });
 
@@ -210,10 +210,20 @@ function buildVolumeMounts(
     readonly: false,
   });
 
-  // Additional mounts validated against external allowlist (tamper-proof from containers)
-  if (group.containerConfig?.additionalMounts) {
+  // Additional mounts validated against external allowlist (tamper-proof from containers).
+  // Combine per-channel config with allowlist-declared auto-mounts, deduping by
+  // containerPath so explicit channel config wins.
+  const explicit = group.containerConfig?.additionalMounts ?? [];
+  const declaredPaths = new Set(
+    explicit.map((m) => m.containerPath || path.basename(m.hostPath)),
+  );
+  const autoMounts: AdditionalMount[] = getAutoMounts().filter(
+    (m) => !declaredPaths.has(m.containerPath || path.basename(m.hostPath)),
+  );
+  const combinedMounts = [...explicit, ...autoMounts];
+  if (combinedMounts.length > 0) {
     const validatedMounts = validateAdditionalMounts(
-      group.containerConfig.additionalMounts,
+      combinedMounts,
       group.name,
       isMain,
     );

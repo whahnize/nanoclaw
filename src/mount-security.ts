@@ -329,6 +329,24 @@ export function validateMount(
 }
 
 /**
+ * Return additional mounts that should be auto-applied to every group,
+ * derived from allowlist entries with `autoMount: true`. Entries whose
+ * host path does not currently exist are skipped (e.g. credentials not
+ * yet configured).
+ */
+export function getAutoMounts(): AdditionalMount[] {
+  const allowlist = loadMountAllowlist();
+  if (!allowlist) return [];
+  return allowlist.allowedRoots
+    .filter((r) => r.autoMount === true)
+    .filter((r) => fs.existsSync(expandPath(r.path)))
+    .map((r) => ({
+      hostPath: r.path,
+      readonly: !r.allowReadWrite,
+    }));
+}
+
+/**
  * Validate all additional mounts for a group.
  * Returns array of validated mounts (only those that passed validation).
  * Logs warnings for rejected mounts.
