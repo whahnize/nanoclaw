@@ -1,0 +1,105 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+                       "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.nanoclaw.cf-fetch-server</string>
+
+  <!-- ProgramArguments points at the cached server.py copy in
+       ~/Library/Caches/com.nanoclaw.cf-fetch-server/, NOT the in-repo
+       source under ~/Desktop. macOS 26 TCC silently denies launchd-spawned
+       processes from reading ~/Desktop and the consent dialog never shows
+       in the launchd background context, so the python interpreter would
+       hang forever in __open_nocancel(). Cache dir is TCC-safe. -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>__PYTHON__</string>
+    <string>__SERVER_PY__</string>
+  </array>
+
+  <!-- WorkingDirectory deliberately points OUTSIDE the repo. /tmp is fine
+       because the sidecar never reads relative paths — every file path it
+       cares about (env, logs, server.py) is absolute. -->
+  <key>WorkingDirectory</key>
+  <string>/tmp</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
+    <key>CF_FETCH_SERVER_HOST</key>
+    <string>127.0.0.1</string>
+    <key>CF_FETCH_SERVER_PORT</key>
+    <string>8765</string>
+    <!-- Webshare residential-proxy URL is injected here at install time
+         from the host-side ~/Desktop/nanoclaw/.env (HTTP_PROXY_URL=...).
+         install.sh runs in the user's interactive context with TCC
+         consent so it CAN read ~/Desktop. The credential lives only in
+         this plist (~/Library/LaunchAgents — host-only, never mounted
+         into the container) and in process env, satisfying the Seed
+         constraint that creds never enter the container. -->
+    <key>HTTP_PROXY_URL</key>
+    <string>__HTTP_PROXY_URL__</string>
+    <!-- PYTHONUNBUFFERED=1 ensures stdout/stderr from server.py reach the
+         launchd log files immediately, not after a buffer flush. -->
+    <key>PYTHONUNBUFFERED</key>
+    <string>1</string>
+    <!-- Sub-AC 1.1.4 long-lived process knobs. server.py defaults already
+         cover these but we set them explicitly here so an operator inspecting
+         the plist can see the production values without reading source. -->
+    <!-- Cap concurrent /fetch operations against the warm browser. Each
+         in-flight tab eats one Webshare proxy rotation slot and briefly
+         drives the renderer hot, so over-parallelising hurts latency more
+         than serial requests do. -->
+    <key>CF_FETCH_SERVER_MAX_CONCURRENT</key>
+    <string>3</string>
+    <!-- Time a /fetch request waits at the gate for a slot before the
+         sidecar returns 503/queue-full. -->
+    <key>CF_FETCH_SERVER_QUEUE_WAIT</key>
+    <string>30</string>
+    <!-- Watchdog poll interval for warm-browser liveness. On crash the
+         watchdog calls _BrowserState.restart() to bring it back. -->
+    <key>CF_FETCH_SERVER_WATCHDOG_INTERVAL</key>
+    <string>30</string>
+    <!-- Shutdown drain budget: how long we wait for in-flight /fetch to
+         finish on SIGTERM before forcing the HTTP server to close. Stays
+         well under launchd's default ExitTimeOut of 20s. -->
+    <key>CF_FETCH_SERVER_SHUTDOWN_DRAIN</key>
+    <string>10</string>
+  </dict>
+
+  <!-- KeepAlive=true so launchd auto-restarts the python process if it dies.
+       This is the heart of Verification D: kill the process, launchd respawns
+       it within ~10s. Sub-AC 1.1.4 adds an in-process watchdog as well — it
+       handles browser-only crashes without forcing a full sidecar restart so
+       we don't lose request-handler state. -->
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <!-- Throttle restart loop so a crash-looping server doesn't peg the CPU.
+       launchd default ThrottleInterval is 10s; we keep it explicit. -->
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+
+  <!-- Give the python process up to 15s after SIGTERM to finish draining
+       in-flight /fetch requests (server.py uses CF_FETCH_SERVER_SHUTDOWN_DRAIN
+       =10s as its inner budget; +5s headroom for browser shutdown +
+       socket close). launchd's default ExitTimeOut is 20s; staying at 15
+       leaves the runtime room without risking SIGKILL on a slow drain. -->
+  <key>ExitTimeOut</key>
+  <integer>15</integer>
+
+  <key>ProcessType</key>
+  <string>Background</string>
+
+  <key>StandardOutPath</key>
+  <string>/tmp/cf-fetch-server.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/tmp/cf-fetch-server.err</string>
+</dict>
+</plist>

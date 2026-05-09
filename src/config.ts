@@ -53,6 +53,16 @@ export const CONTAINER_MAX_OUTPUT_SIZE = parseInt(
 ); // 10MB default
 export const ONECLI_URL =
   process.env.ONECLI_URL || envConfig.ONECLI_URL || 'http://localhost:10254';
+// Stable URL the container's web-fetch wrapper uses to reach the host-side
+// cf-fetch-server sidecar (host-helpers/cf-fetch-server). The sidecar binds
+// 127.0.0.1:8765 on the host (CF_FETCH_SERVER_HOST/PORT in launchd.plist),
+// and Docker Desktop publishes the host at the alias `host.docker.internal`.
+// Operators can override the URL (e.g. for non-default ports, alternate
+// container runtimes, or test mocks) via process env without touching code.
+// The credential flow stays host-only: the URL injected here points at a
+// loopback HTTP endpoint, never carrying webshare proxy credentials.
+export const CF_FETCH_SIDECAR_URL =
+  process.env.CF_FETCH_SIDECAR_URL || 'http://host.docker.internal:8765';
 export const MAX_MESSAGES_PER_PROMPT = Math.max(
   1,
   parseInt(process.env.MAX_MESSAGES_PER_PROMPT || '10', 10) || 10,

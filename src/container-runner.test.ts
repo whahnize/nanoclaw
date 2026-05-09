@@ -8,6 +8,7 @@ const OUTPUT_END_MARKER = '---NANOCLAW_OUTPUT_END---';
 
 // Mock config
 vi.mock('./config.js', () => ({
+  CF_FETCH_SIDECAR_URL: 'http://host.docker.internal:8765',
   CONTAINER_IMAGE: 'nanoclaw-agent:latest',
   CONTAINER_MAX_OUTPUT_SIZE: 10485760,
   CONTAINER_TIMEOUT: 1800000, // 30min
@@ -48,6 +49,7 @@ vi.mock('fs', async () => {
 
 // Mock mount-security
 vi.mock('./mount-security.js', () => ({
+  getAutoMounts: vi.fn(() => []),
   validateAdditionalMounts: vi.fn(() => []),
 }));
 

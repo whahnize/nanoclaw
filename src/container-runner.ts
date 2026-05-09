@@ -7,6 +7,7 @@ import fs from 'fs';
 import path from 'path';
 
 import {
+  CF_FETCH_SIDECAR_URL,
   CONTAINER_IMAGE,
   CONTAINER_MAX_OUTPUT_SIZE,
   CONTAINER_TIMEOUT,
@@ -242,6 +243,17 @@ async function buildContainerArgs(
 
   // Pass host timezone so container's local time matches the user's
   args.push('-e', `TZ=${TIMEZONE}`);
+
+  // Tell the container's web-fetch wrapper where to reach the host-side
+  // cf-fetch-server sidecar (Cloudflare-bypass fallback). The sidecar binds
+  // 127.0.0.1 on the host; the container reaches it at the Docker Desktop
+  // alias `host.docker.internal` (Linux gets the alias via
+  // `--add-host=host.docker.internal:host-gateway` from hostGatewayArgs()
+  // below). Only the URL is injected — webshare proxy credentials stay on
+  // the host in the launchd plist's EnvironmentVariables and never enter
+  // the container. The wrapper falls back to this URL when its in-container
+  // primary path returns a Cloudflare challenge.
+  args.push('-e', `CF_FETCH_SIDECAR_URL=${CF_FETCH_SIDECAR_URL}`);
 
   // OneCLI gateway handles credential injection — containers never see real secrets.
   // The gateway intercepts HTTPS traffic and injects API keys or OAuth tokens.
