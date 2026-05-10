@@ -314,6 +314,136 @@ class FalsePositiveGuards(unittest.TestCase):
         })
         self.assertFalse(out["is_challenge"])
 
+    def test_url_encoded_cf_chl_tk_echo_in_analytics_referer(self):
+        """A post-bypass page often contains a URL-encoded echo of the
+        original challenge URL inside an analytics `ref=` parameter, e.g.
+        `…%3F__cf_chl_tk%3D…`. That echo must NOT count as a CF signal —
+        otherwise every successfully bypassed page would re-trigger
+        fallback forever.
+
+        Reproduces the pap.fr post-CF-bypass envelope that surfaced this
+        false positive.
+        """
+        # Build HTML that ONLY contains URL-encoded echoes of the tokens.
+        # All four URL-shaped tokens are exercised so the guard covers the
+        # full set declared in `_URL_SHAPED_BODY_TOKENS`.
+        html = (
+            "<html><head><title>Real Page</title></head><body>"
+            '<a href="https://piano.pap.fr/redirect?'
+            "ref=https%3A%2F%2Fwww.pap.fr%2Fannonce%2Flocations-appartement"
+            "-paris-75-g439%3F__cf_chl_tk%3DABCDEF-1.0.1.1-XYZ"
+            "%26cf_chl_opt%3Dabc"
+            "%26cf_chl_jschl_tk%3Dxyz"
+            "%26_cf_chl_managed_tk%3Dqqq"
+            '">tracker</a>'
+            "<div>Listings here…</div>"
+            "</body></html>"
+        )
+        out = detect_cloudflare_challenge({
+            "status": 200,
+            "title": "Real Page",
+            "html": html,
+            "headers": {"content-type": "text/html"},
+        })
+        self.assertFalse(
+            out["is_challenge"],
+            f"URL-encoded echo must not flag CF; signals={out['signals']}",
+        )
+        # And confidently — no signals at all.
+        self.assertEqual(out["signals"], [])
+
+    def test_raw_cf_chl_tk_still_detected(self):
+        """The guard must NOT weaken detection of a real CF challenge:
+        a raw (non-URL-encoded) `__cf_chl_tk` reference still fires the
+        body signal."""
+        html = (
+            '<form id="challenge-form" '
+            'action="/cdn-cgi/?__cf_chl_tk=REAL-TOKEN">'
+            "</form>"
+        )
+        out = detect_cloudflare_challenge({
+            "status": 403,
+            "title": "Just a moment...",
+            "html": html,
+            "headers": {},
+        })
+        self.assertTrue(out["is_challenge"])
+        self.assertIn("body:__cf_chl_tk", out["signals"])
+
+    def test_mixed_raw_and_encoded_token_still_detected(self):
+        """If a page has BOTH a real raw token AND a URL-encoded echo,
+        the raw one must win (signal fires)."""
+        html = (
+            '<a href="https://tracker?ref=%3F__cf_chl_tk%3Decho">echo</a>'
+            '<script>window.__cf_chl_tk = "real-token";</script>'
+        )
+        out = detect_cloudflare_challenge({
+            "status": 200,
+            "title": "",
+            "html": html,
+            "headers": {},
+        })
+        self.assertTrue(out["is_challenge"])
+        self.assertIn("body:__cf_chl_tk", out["signals"])
+
+    def test_cdn_cgi_jsd_telemetry_only_does_not_trigger(self):
+        """Cloudflare's always-on JS Detection (JSD) telemetry script
+        (`/cdn-cgi/challenge-platform/scripts/jsd/main.js`) ships on
+        every CF-fronted cleared page. A page whose only CF-related
+        substring is this telemetry must NOT be flagged as a challenge.
+        """
+        html = (
+            "<html><head><title>Real Listings</title></head><body>"
+            '<script>var a=document.createElement("script");'
+            'a.src="/cdn-cgi/challenge-platform/scripts/jsd/main.js";'
+            "document.head.appendChild(a);</script>"
+            "<div>Listing card content</div>"
+            "</body></html>"
+        )
+        out = detect_cloudflare_challenge({
+            "status": 200,
+            "title": "Real Listings",
+            "html": html,
+            "headers": {"content-type": "text/html"},
+        })
+        self.assertFalse(
+            out["is_challenge"],
+            f"JSD telemetry alone must not flag CF; signals={out['signals']}",
+        )
+
+    def test_cdn_cgi_real_challenge_path_still_fires(self):
+        """A genuine interactive challenge serves under sub-paths like
+        `/cdn-cgi/challenge-platform/h/g/…` — this MUST still fire."""
+        html = (
+            '<form id="challenge-form" '
+            'action="/cdn-cgi/challenge-platform/h/g/orchestrate/chl_page/v1">'
+            "</form>"
+        )
+        out = detect_cloudflare_challenge({
+            "status": 403,
+            "title": "Just a moment...",
+            "html": html,
+            "headers": {},
+        })
+        self.assertTrue(out["is_challenge"])
+        self.assertIn("body:cdn-cgi-challenge-platform", out["signals"])
+
+    def test_cdn_cgi_jsd_telemetry_plus_real_challenge_fires(self):
+        """If a page has BOTH JSD telemetry AND a real challenge sub-path,
+        the real one wins."""
+        html = (
+            '<script src="/cdn-cgi/challenge-platform/scripts/jsd/main.js"></script>'
+            '<a href="/cdn-cgi/challenge-platform/h/b/orchestrate/managed/v1">x</a>'
+        )
+        out = detect_cloudflare_challenge({
+            "status": 200,
+            "title": "",
+            "html": html,
+            "headers": {},
+        })
+        self.assertTrue(out["is_challenge"])
+        self.assertIn("body:cdn-cgi-challenge-platform", out["signals"])
+
 
 class ContractShape(unittest.TestCase):
     """Contract guarantees — keys, types, ordering."""

@@ -9,7 +9,8 @@ container's web-fetch wrapper can call as fallback when the in-container
 agent-browser hits a Cloudflare challenge. The container reaches the host via
 `host.docker.internal`.
 
-Layout follows the `host-helpers/paris-pap-fetch/` precedent:
+Layout (host-helper convention — install.sh + plist template + worker script
+under `host-helpers/<name>/`, mirrored to `~/Library/LaunchAgents/com.nanoclaw.<name>.plist`):
 
 | File | Purpose |
 |------|---------|

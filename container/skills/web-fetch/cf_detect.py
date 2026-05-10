@@ -94,6 +94,20 @@ _TITLE_TOKENS_RAW: tuple[str, ...] = (
 # tokens, raw on the Korean string). They were picked from real CF
 # interstitial source so a legitimate page that merely mentions
 # "Cloudflare" in prose does NOT match.
+#
+# URL-shaped tokens (cf_chl_*, __cf_chl_tk, _cf_chl_managed_tk) get a
+# false-positive guard — see `_URL_SHAPED_BODY_TOKENS` and
+# `_token_has_raw_occurrence` below. These tokens commonly bleed into
+# analytics / Piano referrer parameters as URL-encoded echoes
+# (e.g. `%3F__cf_chl_tk%3D…` inside a `ref=` query value) once a real
+# page successfully loads through CF; counting those echoes as a CF
+# signal would force every post-bypass listing page to keep falling
+# back forever. The guard only honours an occurrence that appears in a
+# RAW (non-URL-encoded) context, where the preceding three characters
+# do NOT look like a URL-encoded byte (`%[0-9a-f]{2}$`). A genuine
+# challenge page emits the token in script source, form action, or
+# inline JS — all of which are raw. A post-bypass analytics referer
+# only ever contains the URL-encoded form, which the guard rejects.
 _BODY_TOKENS_LOWER: tuple[tuple[str, str], ...] = (
     ("/cdn-cgi/challenge-platform/", "body:cdn-cgi-challenge-platform"),
     ("cf_chl_opt", "body:cf_chl_opt"),
@@ -108,6 +122,42 @@ _BODY_TOKENS_LOWER: tuple[tuple[str, str], ...] = (
     ("cf-browser-verification", "body:cf-browser-verification"),
     ("cf-please-wait", "body:cf-please-wait"),
     ("cf-error-details", "body:cf-error-details"),
+)
+
+# Subset of `_BODY_TOKENS_LOWER` that need the URL-encoded-echo guard.
+# Anything in this set is only counted as a CF signal when at least one
+# occurrence appears in a raw (non-URL-encoded) context.
+_URL_SHAPED_BODY_TOKENS: frozenset[str] = frozenset({
+    "cf_chl_opt",
+    "cf_chl_jschl_tk",
+    "__cf_chl_tk",
+    "_cf_chl_managed_tk",
+})
+
+# Pre-compiled URL-encoded byte pattern (`%` followed by two hex digits)
+# used by `_token_has_raw_occurrence` to reject double-URL-encoded
+# analytics-referer echoes of CF challenge tokens.
+_URL_ENCODED_BYTE_RE = re.compile(r"%[0-9a-f]{2}\Z")
+
+# Cloudflare emits a JavaScript-Detection (JSD) telemetry script under
+# `/cdn-cgi/challenge-platform/scripts/jsd/main.js` on EVERY page it
+# fronts — including fully cleared, post-bypass pages. The bare
+# substring `/cdn-cgi/challenge-platform/` therefore is NOT specific to
+# an active challenge: a CF-fronted site that the user is allowed to
+# read still ships this telemetry. Real interactive challenges live
+# under sub-paths like `/cdn-cgi/challenge-platform/h/g/…` or
+# `/cdn-cgi/challenge-platform/h/b/…` (the `h/…` family) — those should
+# still fire detection.
+#
+# `_CDN_CGI_BENIGN_SUBPATHS` is the allow-list of suffixes that follow
+# `/cdn-cgi/challenge-platform/` on cleared pages. An occurrence of the
+# token followed by ANY of these suffixes is treated as benign and does
+# not, on its own, count as a CF signal. The match needs at least one
+# occurrence whose suffix is NOT in this list to fire — same shape as
+# the URL-encoded-echo guard.
+_CDN_CGI_BENIGN_SUBPATHS: tuple[str, ...] = (
+    "scripts/jsd/",  # JavaScript Detection telemetry (always-on)
+    "scripts/invisible.js",  # legacy invisible-challenge telemetry
 )
 _BODY_TOKENS_RAW: tuple[tuple[str, str], ...] = (
     ("잠시만 기다리", "body:cf-korean-please-wait"),
@@ -299,18 +349,96 @@ def _title_hits(title: str) -> str | None:
 
 
 def _body_strong_hits(html: str) -> list[str]:
-    """Return labels of every strong body token that matched."""
+    """Return labels of every strong body token that matched.
+
+    URL-shaped CF tokens (`__cf_chl_tk`, `cf_chl_opt`, `cf_chl_jschl_tk`,
+    `_cf_chl_managed_tk`) are filtered through `_token_has_raw_occurrence`
+    so that double-URL-encoded analytics-referer echoes (e.g.
+    `%3F__cf_chl_tk%3D…` inside a Piano `ref=` parameter on a fully
+    loaded post-bypass page) do NOT count as a CF signal. A real CF
+    challenge always emits the token raw in script source / form action /
+    inline JS, which the guard accepts. The guard never weakens detection
+    of an actual CF challenge — it only rejects benign URL-encoded
+    echoes.
+    """
     if not html:
         return []
     body_lower = html.lower()
     hits: list[str] = []
     for tok, label in _BODY_TOKENS_LOWER:
-        if tok in body_lower:
-            hits.append(label)
+        if tok not in body_lower:
+            continue
+        if tok in _URL_SHAPED_BODY_TOKENS and not _token_has_raw_occurrence(
+            body_lower, tok
+        ):
+            # All occurrences are URL-encoded analytics echoes — skip.
+            continue
+        if tok == "/cdn-cgi/challenge-platform/" and not _cdn_cgi_has_challenge_occurrence(
+            body_lower
+        ):
+            # Every occurrence is the always-on JSD telemetry script that
+            # CF injects on cleared pages — not an active challenge.
+            continue
+        hits.append(label)
     for tok, label in _BODY_TOKENS_RAW:
         if tok in html:
             hits.append(label)
     return hits
+
+
+def _cdn_cgi_has_challenge_occurrence(body_lower: str) -> bool:
+    """Return True when at least one `/cdn-cgi/challenge-platform/`
+    occurrence is followed by something OTHER than CF's always-on
+    telemetry sub-paths (`scripts/jsd/`, `scripts/invisible.js`).
+
+    A real interactive challenge serves additional sub-paths under
+    `/cdn-cgi/challenge-platform/` (typically `h/g/…`, `h/b/…`, or a
+    bare query-string-only URL), and a fully cleared page only carries
+    the JSD telemetry script. This guard suppresses the latter so a
+    successfully bypassed CF-fronted page does not re-trigger fallback
+    forever.
+    """
+    token = "/cdn-cgi/challenge-platform/"
+    n = len(token)
+    idx = 0
+    while True:
+        i = body_lower.find(token, idx)
+        if i < 0:
+            return False
+        suffix = body_lower[i + n: i + n + 32]
+        if not any(suffix.startswith(b) for b in _CDN_CGI_BENIGN_SUBPATHS):
+            return True
+        idx = i + n
+
+
+def _token_has_raw_occurrence(body_lower: str, token: str) -> bool:
+    """Return True when at least one occurrence of `token` in `body_lower`
+    appears outside a URL-encoded byte sequence.
+
+    A "raw" occurrence is one whose preceding 3 characters do NOT match
+    the URL-encoded-byte pattern `%[0-9a-f]{2}` — i.e. it's not the tail
+    of a `%xx` triplet.
+
+    The guard exists to suppress false positives from analytics referer
+    echoes (e.g. Piano's `ref=https%3A%2F%2F…%3F__cf_chl_tk%3D…`) that
+    a legit page emits AFTER a CF bypass succeeds. Such echoes only ever
+    appear in URL-encoded form. A genuine CF challenge page emits the
+    token raw in script source / form action / inline JS, which always
+    has a non-URL-encoded preceding context.
+
+    Body must already be lower-cased (caller's responsibility) since the
+    URL-encoded-byte regex is lower-case-only.
+    """
+    idx = 0
+    n = len(token)
+    while True:
+        i = body_lower.find(token, idx)
+        if i < 0:
+            return False
+        prev = body_lower[max(0, i - 3): i]
+        if not _URL_ENCODED_BYTE_RE.search(prev):
+            return True
+        idx = i + n
 
 
 def _body_weak_hits(html: str) -> list[str]:

@@ -61,6 +61,13 @@ import urllib.request
 from typing import Any
 from urllib.parse import urlparse
 
+# The sidecar lives on the loopback host alias and must NOT be tunnelled
+# through any HTTP_PROXY/HTTPS_PROXY the surrounding harness (e.g. OneCLI
+# credential gateway) injects into the container. Use an opener with an
+# empty ProxyHandler so urllib bypasses env-based proxies for every call.
+_NO_PROXY_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -254,7 +261,7 @@ def _open_sidecar(req: urllib.request.Request, *,
     sidecar returns (e.g. queue-full 503).
     """
     try:
-        resp = urllib.request.urlopen(req, timeout=read_timeout)
+        resp = _NO_PROXY_OPENER.open(req, timeout=read_timeout)
     except urllib.error.HTTPError as e:
         # The sidecar returned a non-2xx with a JSON body. Read it so we
         # can preserve its `error`/`backend` fields in the wrapper

@@ -639,7 +639,7 @@ describe('DiscordChannel', () => {
 
       await channel.sendMessage('dc:1234567890123456', 'Hello');
 
-      const fetchedChannel =
+      const _fetchedChannel =
         await currentClient().channels.fetch('1234567890123456');
       expect(currentClient().channels.fetch).toHaveBeenCalledWith(
         '1234567890123456',
