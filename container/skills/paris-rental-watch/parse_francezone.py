@@ -4,9 +4,9 @@ francezone bbs_2 list/detail HTML parser.
 
 Usage:
     curl -s -A 'Mozilla/5.0' 'https://www.francezone.com/bbs/list.html?table=bbs_2' \
-        | python3 parse_post.py list
+        | python3 parse_francezone.py list
     curl -s -A 'Mozilla/5.0' 'https://www.francezone.com/bbs/view.html?idxno=2521572' \
-        | python3 parse_post.py detail
+        | python3 parse_francezone.py detail
 """
 import json
 import re

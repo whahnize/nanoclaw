@@ -155,6 +155,7 @@ from pap_failure_log import (
     log_pap_fetch_failure,
     reset_pap_fetch_counter,
 )
+from pap_prefilter import prefilter_pap_card  # evidence-only drop (unit-tested)
 
 PAP_BASE_URL          = "https://www.pap.fr/annonce/locations-appartement-paris-75-g439"
 PAP_MAX_PAGES         = 50
@@ -244,17 +245,17 @@ for page in range(1, PAP_MAX_PAGES + 1):
         if nid in seen:
             pap_skipped_seen += 1
             continue
-        # Conservative pre-filter — host fetch.py 포팅. 정밀 분류는 LLM (3b).
+        # Conservative pre-filter (pap_prefilter.prefilter_pap_card, unit-tested):
+        # drop ONLY on positive evidence — price known & >max, or surface known
+        # & <min. Unknown (None) price/surface is KEPT and handed to the LLM 7축
+        # classifier (3b). rooms is NOT a drop axis on its own — a 1-pièce with
+        # unparsed surface must reach the classifier, not be silently dropped.
         price = c.get("price_eur")
         surface = c.get("surface_m2")
         rooms = c.get("rooms")
-        if price and price > PAP_PRICE_MAX:
-            pap_pre_filtered_out += 1
-            continue
-        if surface and surface < PAP_SURFACE_MIN:
-            pap_pre_filtered_out += 1
-            continue
-        if rooms == 1 and (surface is None or surface < PAP_SURFACE_MIN):
+        keep, _drop_reason = prefilter_pap_card(
+            c, price_max=PAP_PRICE_MAX, surface_min=PAP_SURFACE_MIN)
+        if not keep:
             pap_pre_filtered_out += 1
             continue
         # Geocode (Paris centroid fallback on failure)

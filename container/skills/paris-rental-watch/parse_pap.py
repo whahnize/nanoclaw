@@ -69,9 +69,9 @@ _NAME_ATTR_RE = re.compile(r'\bname="(?P<v>[^"]+)"')
 _HREF_ATTR_RE = re.compile(r'\bhref="(?P<v>[^"]+)"')
 _ID_FROM_HREF_RE = re.compile(r'-r(\d+)\b')
 
-# .item-price → "1.900&nbsp;€/月" or "1 900 € / mois"; we strip every non-
+# .item-price → "1.900&nbsp;€" or "1 900 € / mois"; we strip every non-
 # digit before int() so thin-space, NBSP, narrow NBSP, dot, comma, and
-# spaces all collapse to the bare integer the host fetch.py JS produced.
+# spaces all collapse to a bare integer the downstream pre-filter can compare.
 _PRICE_RE = re.compile(
     r'class="[^"]*\bitem-price\b[^"]*"[^>]*>\s*([^<]*?)€',
     re.S | re.I,
@@ -84,10 +84,16 @@ _TAGS_BLOCK_RE = re.compile(
 )
 _LI_RE = re.compile(r'<li\b[^>]*>(?P<inner>.*?)</li>', re.S | re.I)
 
-# Surface / rooms heuristics — mirror the host fetch.py JS verbatim.
-# - JS:  const m = t.match(/(\d+)\s*m/);
-# - JS:  const m = t.match(/(\d+)\s*pi/);
-_SURFACE_TAG_RE = re.compile(r'(\d+)\s*m', re.I)
+# Surface / rooms heuristics.
+# Surface tags read "45 m²" / "45 m2" / "45 m". A bare `(\d+)\s*m` would
+# also match the leading digits of a "2 min métro" / "5 min marche"
+# walk-time tag, so a card whose tags list a transit time BEFORE the
+# surface tag would mis-parse surface to the walk-time number (e.g. a real
+# 32 m² flat → surface_m2=2), which the downstream pre-filter then drops as
+# "under 30 m²". The negative lookahead `(?![a-z])` requires the char after
+# the `m` to NOT be a letter — so "m²"/"m2"/"m " match but "min" does not.
+_SURFACE_TAG_RE = re.compile(r'(\d+)\s*m(?![a-z])', re.I)
+# Rooms tags read "3 pièces" / "1 pièce" → match "<n> pi".
 _ROOMS_TAG_RE = re.compile(r'(\d+)\s*pi', re.I)
 
 # Other selectors.
@@ -120,8 +126,8 @@ def _read_stdin() -> str:
 
 
 def _clean_text(s: str) -> str:
-    """Strip tags + entities + collapse whitespace. Mirrors how the host JS
-    used `.innerText.replace(/\\s+/g, ' ').trim()` on the same elements."""
+    """Strip tags + entities + collapse whitespace — the text-extraction
+    equivalent of a browser's `.innerText.replace(/\\s+/g, ' ').trim()`."""
     s = re.sub(r"<[^>]+>", "", s)
     s = unescape(s)
     return re.sub(r"\s+", " ", s).strip()
@@ -131,9 +137,8 @@ def _parse_price(raw: str) -> int | None:
     """Extract an integer euro amount from the raw `.item-price` text.
 
     pap.fr renders prices as "1.900&nbsp;€" or "1 900 €" or "1 900 €".
-    The JS extractor stripped non-digits and parsed an int; we do the same so
-    the container's pre-filter sees identical numbers to what the host
-    pipeline used to produce."""
+    We strip non-digits and parse an int so the container's pre-filter has a
+    plain integer to compare against PAP_PRICE_MAX."""
     digits = re.sub(r"[^\d]", "", raw or "")
     if not digits:
         return None
@@ -234,10 +239,9 @@ def _parse_card(chunk: str) -> dict | None:
     photo = ""
     im = _IMG_RE.search(chunk)
     if im:
-        # Match host fetch.py behavior — .src in a real browser resolves
-        # protocol-relative and root-relative URLs to absolute, so we do
-        # the same here for downstream consumers (alert card rendering,
-        # geocoder fallback, etc.).
+        # A real browser's .src resolves protocol-relative and root-relative
+        # URLs to absolute, so we do the same here for downstream consumers
+        # (alert card rendering, geocoder fallback, etc.).
         photo = _make_absolute(im.group("v"))
 
     return {

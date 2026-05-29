@@ -39,3 +39,14 @@ scripts/paris-rental/.overpass_cache.json
 .nanoclaw/
 
 agents-sdk-docs
+
+# Python bytecode cache
+__pycache__/
+*.pyc
+
+# Ouroboros / Seed local verification artifacts (regenerated per run)
+.ouroboros/
+.ouroboros_eval_artifact.md
+**/SUB-AC-*-EVIDENCE.txt
+**/VERIFICATION-*-EVIDENCE.txt
+scripts/paris-rental/*.run.log
