@@ -1,6 +1,6 @@
 ---
 name: paris-rental-watch
-description: Poll Paris real-estate sources (francezone bbs_2 + bbs_3 + pap.fr) for rentals matching ≥30m² · ≤1800€/월 · 2026-06+ 입주 · 시내+inner 근교, push alerts to discord_personal channel and auto-build interactive Leaflet+KML map. Triggers on `/paris-rental-watch`, `매물 체크`, or scheduled cron. Supports `--test` for dry runs. Replaces former `francezone-watch`.
+description: Poll Paris real-estate sources (francezone bbs_2 + bbs_3 + pap.fr) for rentals matching ≥30m² · ≤1800€/월(환산) · 단독거주 · 시내+inner 근교, in TWO tracks — 장기(2026-06+ 입주) 또는 단기 여름(입주 ≤2026-08-31 & 미종료). Push alerts to discord_personal channel and auto-build interactive Leaflet+KML map (장기/단기 필터 포함). Triggers on `/paris-rental-watch`, `매물 체크`, or scheduled cron. Supports `--test` for dry runs. Replaces former `francezone-watch`.
 allowed-tools: Bash(curl:*), Bash(python3:*), Bash(web-fetch:*), Bash(mkdir:*), Bash(printf:*), Bash(cat:*), Bash(rm:*), Bash(mv:*), Bash(sleep:*)
 ---
 
@@ -37,6 +37,11 @@ HTML_OUT    = $PUBLIC_DIR/paris-realestate.html
 KML_OUT     = $PUBLIC_DIR/paris-realestate.kml
 SKILL_DIR   = /home/node/.claude/skills/paris-rental-watch
 
+# 분류 2-트랙 (classify_rules.md 참조)
+LONG_MOVE_IN_MIN = 2026-06-01   # 장기 track 최소 입주일
+SHORT_TERM_END   = 2026-08-31   # 단기(여름) track 컷오프 — 시작 ≤ 이 날짜 & 미종료. 시즌 지나면 이 한 줄만 갱신
+PRICE_MAX_EUR    = 1800         # 월세 환산 상한 (장·단기 공통)
+
 # pap.fr (Source C) — direct fetch, container-side
 PAP_BASE_URL          = https://www.pap.fr/annonce/locations-appartement-paris-75-g439
 PAP_MAX_PAGES         = 50
@@ -53,6 +58,8 @@ PAP_FAILURE_THRESHOLD = 3      # 연속 실패 알림 임계 (Seed: failure_thre
 ## 분류 규칙
 
 **`./classify_rules.md` 참조** — 7축 (거래유형 추가, 매매 reject), 가격 단위 가이드, 판정 알고리즘 모두 거기 있음. 본 SKILL.md를 읽고 즉시 classify_rules.md도 함께 읽을 것.
+
+**2-트랙 (장기/단기 여름).** 한 매물이 ① 장기(2026-06+ 입주, 월세 ≤1800€) 또는 ② 단기 여름(입주 ≤ `SHORT_TERM_END` & 종료 ≥ 오늘, 월세 **환산** ≤1800€) 중 하나라도 충족하면 통과. `term`(long/short/flex/unknown)은 알림·지도 배지 + 지도 필터에 쓰임. 가격은 단위(`price_unit`)에 맞춰 월세로 환산해 `price_eur`에 저장(weekly×4.345·nightly×30·flat 총액×30÷체류일). 날짜·환산 절차는 classify_rules.md “## 기간 판정” 참조.
 
 ## Preamble (실행마다 1회)
 
@@ -459,8 +466,14 @@ with open(LISTINGS, "a") as f:
 # Discord 알림
 flag = "✅" if verdict["verdict"] == "pass" else "⚠️"
 src_badge = {"francezone-bbs2":"💬 bbs2","francezone-bbs3":"💬 bbs3","pap":"🇫🇷 pap"}[source]
-card = f"""{flag} 새 매물 — {title} [{src_badge}]
-📍 {verdict['location_text']} ({verdict['zip_or_arr']})  |  {verdict['area_m2'] or '?'}m²  |  {verdict['price_eur'] or '?'}€/월
+term_badge = {"long":"🏠 장기","short":"⛱️ 단기","flex":"🔁 유연"}.get(verdict["term"], "❓기간미상")
+# 단기(weekly/nightly/flat)는 환산값임을 표시
+_pu = verdict.get("price_unit", "monthly")
+_price = verdict["price_eur"]
+price_str = (f"{_price}€/월" if _pu in ("monthly", None) or _price is None
+             else f"≈{_price}€/월(환산·{_pu})")
+card = f"""{flag} 새 매물 — {title} [{src_badge}] [{term_badge}]
+📍 {verdict['location_text']} ({verdict['zip_or_arr']})  |  {verdict['area_m2'] or '?'}m²  |  {price_str}
 🗓️ 입주: {verdict['move_in'] or '미기재'} · 단/장: {verdict['term']} · 단독/셰어: {verdict['occupancy']}
 📷 {photo_url or '사진 없음'}
 🔗 원글: {url}

@@ -42,7 +42,7 @@ const FIXTURE = [
     title: 'T2 14e arr', url: 'https://example.com/1', verdict: 'pass',
     lat: 48.83, lng: 2.32, location_text: '14e',
     price_eur: 1200, area_m2: 35, move_in: '2026-06-01',
-    rooms: 'T2', meuble: 'meuble', zip_or_arr: '75014',
+    rooms: 'T2', meuble: 'meuble', zip_or_arr: '75014', term: 'long',
   },
   // T3, non, 75011, pap, flexible, price=1800, area=55
   {
@@ -50,7 +50,7 @@ const FIXTURE = [
     title: 'T3 11e arr', url: 'https://example.com/2', verdict: 'pass',
     lat: 48.85, lng: 2.37, location_text: '11e',
     price_eur: 1800, area_m2: 55, move_in: 'flexible',
-    rooms: 'T3', meuble: 'non', zip_or_arr: '75011',
+    rooms: 'T3', meuble: 'non', zip_or_arr: '75011', term: 'short',
   },
   // T1, unknown, 92100, bbs3, missing date, price=900, area=22
   {
@@ -58,7 +58,7 @@ const FIXTURE = [
     title: 'T1 92', url: 'https://example.com/3', verdict: 'ambiguous',
     lat: 48.88, lng: 2.24, location_text: 'Boulogne',
     price_eur: 900, area_m2: 22, move_in: null,
-    rooms: 'T1', meuble: 'unknown', zip_or_arr: '92100',
+    rooms: 'T1', meuble: 'unknown', zip_or_arr: '92100', term: 'flex',
   },
   // T4+, meuble, 75001, bbs2, 2025-09 (PAST → blocked by move-in)
   {
@@ -66,7 +66,7 @@ const FIXTURE = [
     title: 'T4+ 1e arr', url: 'https://example.com/4', verdict: 'pass',
     lat: 48.86, lng: 2.34, location_text: '1e',
     price_eur: 2400, area_m2: 80, move_in: '2025-09-01',
-    rooms: 'T4+', meuble: 'meuble', zip_or_arr: '75001',
+    rooms: 'T4+', meuble: 'meuble', zip_or_arr: '75001', term: 'long',
   },
 ];
 
@@ -194,6 +194,7 @@ function makeNodes() {
   }
   chips('filter-rooms', ['T1', 'T2', 'T3', 'T4+', 'unknown']);
   chips('filter-meuble', ['meuble', 'non', 'unknown']);
+  chips('filter-term', ['long', 'short', 'flex', 'unknown']);
   chips('filter-sources', ['francezone-bbs2', 'francezone-bbs3', 'pap']);
   // 24 arr chips: 1..20 + 92,93,94 + unknown
   const arrVals = [];
@@ -454,6 +455,20 @@ assert('move-in→state', FilterState.get().moveInAfter202606 === true,
   `moveInAfter202606=${FilterState.get().moveInAfter202606}`);
 // Pass: 2026-06-01 (axis 1), flexible (axis 2), null (axis 3). Reject: 2025-09 (axis 4).
 assert('move-in filters cluster', lastVisible() === 3, `expected 3, got ${lastVisible()}`);
+reset();
+
+// === axis: term (장기/단기) ===
+toggleChip('filter-term', 'short');
+assert('term→state', FilterState.get().termSelected.length === 1 &&
+  FilterState.get().termSelected[0] === 'short',
+  `termSelected=${JSON.stringify(FilterState.get().termSelected)}`);
+// Only fixture #2 (pap T3) is term=short.
+assert('term filters cluster (short)', lastVisible() === 1,
+  `expected 1 (only short), got ${lastVisible()}`);
+toggleChip('filter-term', 'long');
+// short + long → #1, #2, #4 (term long/short/long); #3 is flex → excluded.
+assert('term filters cluster (short+long)', lastVisible() === 3,
+  `expected 3 (short+long), got ${lastVisible()}`);
 reset();
 
 // === axis 6: sources ===

@@ -214,6 +214,16 @@ LEAFLET_TEMPLATE = """<!doctype html>
       </label>
       <p class="filter-hint">체크 해제 = 전체 · 입주일 미기재/협의 매물도 통과</p>
     </div>
+    <div class="filter-group" data-filter="term">
+      <span class="label">기간 유형</span>
+      <div class="chip-group" id="filter-term" role="group" aria-label="장기/단기 필터">
+        <label><input type="checkbox" class="filter-term" value="long"><span>🏠 장기</span></label>
+        <label><input type="checkbox" class="filter-term" value="short"><span>⛱️ 단기</span></label>
+        <label><input type="checkbox" class="filter-term" value="flex"><span>🔁 유연</span></label>
+        <label><input type="checkbox" class="filter-term" value="unknown"><span>미기재</span></label>
+      </div>
+      <p class="filter-hint">선택 안 함 = 전체 (장기+단기 여름)</p>
+    </div>
     <div class="filter-group" data-filter="sources">
       <span class="label">출처</span>
       <div class="chip-group" id="filter-sources" role="group" aria-label="매물 출처 필터">
@@ -360,13 +370,21 @@ function popupHtml(d){
     ? '<div class="ambig">⚠️ 모호: '+escapeHtml(d.ambiguous_axes.join(', '))+'</div>' : '';
   const moveIn = d.move_in || '미기재';
   const area = d.area_m2 != null ? d.area_m2+'m²' : '면적 미기재';
-  const price = d.price_eur != null ? d.price_eur+'€/월' : '가격 미기재';
+  // Short-term prices are stored as a monthly-equivalent (weekly×4.345 etc.),
+  // so flag them as approximate with the original unit for transparency.
+  const isShortPrice = d.price_unit && d.price_unit !== 'monthly';
+  const price = d.price_eur != null
+    ? (isShortPrice ? '≈'+d.price_eur+'€/월(환산)' : d.price_eur+'€/월')
+    : '가격 미기재';
+  const TERM_LABEL = {long:'🏠 장기', short:'⛱️ 단기', flex:'🔁 유연'};
+  const termLabel = TERM_LABEL[d.term] || '';
+  const termBadge = termLabel ? '<span class="src">'+termLabel+'</span>' : '';
   const srcBadge = SOURCE_LABEL[d.source] ? '<span class="src">'+SOURCE_LABEL[d.source]+'</span>' : '';
   const gmaps = 'https://www.google.com/maps/search/?api=1&query='+d.lat+','+d.lng;
   const gdir  = 'https://www.google.com/maps/dir/?api=1&destination='+d.lat+','+d.lng;
   const gpano = 'https://www.google.com/maps/@?api=1&map_action=pano&viewpoint='+d.lat+','+d.lng;
   return '<div class="popup">'
-    + srcBadge
+    + srcBadge + termBadge
     + '<h3>'+escapeHtml(d.title)+'</h3>'
     + '<div class="meta">📍 '+escapeHtml(d.location_text||'위치 미상')
     + ' · '+area+' · '+price
@@ -486,8 +504,9 @@ openHash();
      3. rooms   roomsSelected   ⊂ ['T1','T2','T3','T4+','unknown']; [] = no filter
      4. meuble  meubleSelected  ⊂ ['meuble','non','unknown'];        [] = no filter
      5. move-in moveInAfter202606 — boolean; false = no filter
-     6. sources sourcesSelected ⊂ ['francezone-bbs2','francezone-bbs3','pap']; [] = no filter
-     7. location:
+     6. term    termSelected    ⊂ ['long','short','flex','unknown']; [] = no filter
+     7. sources sourcesSelected ⊂ ['francezone-bbs2','francezone-bbs3','pap']; [] = no filter
+     8. location:
           - arrSelected         ⊂ ['1'..'20','92','93','94','unknown']; [] = no filter
           - metroLinesSelected  ⊂ metro/RER/tram line ids; [] = no filter
         (held here; OR-combined and gated through passesFilter — see the
@@ -510,6 +529,7 @@ const FilterState = (function(){
       roomsSelected:      [],
       meubleSelected:     [],
       moveInAfter202606:  false,
+      termSelected:       [],
       sourcesSelected:    [],
       arrSelected:        [],
       metroLinesSelected: [],
@@ -537,6 +557,7 @@ const FilterState = (function(){
       roomsSelected:      state.roomsSelected.slice(),
       meubleSelected:     state.meubleSelected.slice(),
       moveInAfter202606:  state.moveInAfter202606,
+      termSelected:       state.termSelected.slice(),
       sourcesSelected:    state.sourcesSelected.slice(),
       arrSelected:        state.arrSelected.slice(),
       metroLinesSelected: state.metroLinesSelected.slice(),
@@ -729,6 +750,7 @@ function passesFilter(d, s){
   if (!inSet(d.rooms,  s.roomsSelected))  return false;
   if (!inSet(d.meuble, s.meubleSelected)) return false;
   if (s.moveInAfter202606 && !moveInOk(d.move_in)) return false;
+  if (!inSet(d.term,   s.termSelected))   return false;
   if (!inSet(d.source, s.sourcesSelected)) return false;
   // Location axis: arr ∪ metro-line. Both halves combined inside
   // passesLocation() so the OR-semantics live in one auditable place.
@@ -816,6 +838,7 @@ const FilterHash = (function(){
     emitCsv('rooms',   s.roomsSelected);
     emitCsv('meuble',  s.meubleSelected);
     if (s.moveInAfter202606) emit('movein', '1');
+    emitCsv('term',    s.termSelected);
     emitCsv('sources', s.sourcesSelected);
     emitCsv('arr',     s.arrSelected);
     emitCsv('line',    s.metroLinesSelected);
@@ -837,6 +860,7 @@ const FilterHash = (function(){
       areaMin: null,  areaMax: null,
       roomsSelected: [], meubleSelected: [],
       moveInAfter202606: false,
+      termSelected: [],
       sourcesSelected: [], arrSelected: [], metroLinesSelected: [],
     };
     if (typeof hash !== 'string') return patch;
@@ -863,6 +887,7 @@ const FilterHash = (function(){
       } else if (k === 'rooms')   { patch.roomsSelected      = csv(v); }
       else if   (k === 'meuble')  { patch.meubleSelected     = csv(v); }
       else if   (k === 'movein')  { patch.moveInAfter202606  = dec(v) === '1'; }
+      else if   (k === 'term')    { patch.termSelected       = csv(v); }
       else if   (k === 'sources') { patch.sourcesSelected    = csv(v); }
       else if   (k === 'arr')     { patch.arrSelected        = csv(v); }
       else if   (k === 'line')    { patch.metroLinesSelected = csv(v); }
@@ -897,6 +922,7 @@ const FilterHash = (function(){
     }
     setChips('filter-rooms',   s.roomsSelected);
     setChips('filter-meuble',  s.meubleSelected);
+    setChips('filter-term',    s.termSelected);
     setChips('filter-sources', s.sourcesSelected);
     setChips('filter-arr',     s.arrSelected);
     // Safe if the metro-line UI hasn't shipped yet — querySelectorAll returns
@@ -1018,6 +1044,7 @@ const FilterHash = (function(){
       areaMax:  readNum('filter-area-max'),
       roomsSelected:   readChecked('filter-rooms'),
       meubleSelected:  readChecked('filter-meuble'),
+      termSelected:    readChecked('filter-term'),
       sourcesSelected: readChecked('filter-sources'),
       arrSelected:     readChecked('filter-arr'),
       moveInAfter202606: !!(moveInEl && moveInEl.checked),
@@ -1046,7 +1073,7 @@ const FilterHash = (function(){
   // a metro-line chip flows through syncFromInputs → FilterState.set →
   // applyFilters/writeHashFromState exactly like every other categorical axis.
   const checkboxes = document.querySelectorAll(
-    'input.filter-rooms, input.filter-meuble, input.filter-sources, input.filter-arr, input.filter-line, input.filter-movein'
+    'input.filter-rooms, input.filter-meuble, input.filter-term, input.filter-sources, input.filter-arr, input.filter-line, input.filter-movein'
   );
   for (let i = 0; i < checkboxes.length; i++){
     checkboxes[i].addEventListener('change', syncFromInputs);
