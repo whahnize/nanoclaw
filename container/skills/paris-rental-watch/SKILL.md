@@ -84,6 +84,10 @@ if os.path.exists(LEGACY) and not os.path.exists(STATE):
         # AC 2 — pap 실패 카운터/사유는 더 이상 별도 파일이 아니라 STATE 내부.
         "pap_consec_failures": 0,
         "pap_last_failure_reason": None,
+        # Content de-dup — fingerprints of units already surfaced (zip|area|
+        # price|rooms). Seeded from listings.jsonl on first run (Section 1).
+        "seen_fingerprints": [],
+        "fingerprints_backfilled_at": None,
     }, open(STATE,"w"), ensure_ascii=False, indent=2)
     os.rename(LEGACY, LEGACY + ".bak")
 ```
@@ -95,13 +99,48 @@ if os.path.exists(LEGACY) and not os.path.exists(STATE):
 ### 1. State 로드
 
 ```python
+import sys
+SKILL_DIR = "/home/node/.claude/skills/paris-rental-watch"
+if SKILL_DIR not in sys.path:
+    sys.path.insert(0, SKILL_DIR)
+from dedup import fingerprint_of  # content de-dup (unit-tested: test_dedup.py)
+
+LISTINGS = "/workspace/extra/webdav-data/public/paris-rental/listings.jsonl"
+
 state = json.load(open(STATE))
 seen = set(state["seen_post_ids"])
 # AC 2 — old install이면 키 없을 수 있어 안전 시드
 state.setdefault("pap_consec_failures", 0)
 state.setdefault("pap_last_failure_reason", None)
 state.setdefault("pap_failure_last_alert", None)
+# 콘텐츠 de-dup 상태 (old install 안전 시드)
+state.setdefault("seen_fingerprints", [])
+state.setdefault("fingerprints_backfilled_at", None)
+seen_fps = set(state["seen_fingerprints"])
+
+# One-time backfill — seed fingerprints from the existing listings log so a
+# repost of an already-listed unit (new post_id) is recognised on the very
+# first run after this feature ships, not re-alerted. Idempotent via the flag.
+if not state["fingerprints_backfilled_at"]:
+    try:
+        with open(LISTINGS) as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    fp = fingerprint_of(json.loads(line))
+                    if fp:
+                        seen_fps.add(fp)
+    except FileNotFoundError:
+        pass
+    state["fingerprints_backfilled_at"] = now_iso()
 ```
+
+> **Content de-dup (재게시 차단).** francezone 중개업자는 같은 집을 며칠마다
+> 새 post_id로 재게시한다(끌어올리기). `seen_post_ids`는 ID만 보므로 매번
+> "새 매물"로 알림이 나갔다. 이제 `dedup.fingerprint_of` 가 `zip|면적|가격|방수`
+> 지문을 만들어 **이미 알린 매물의 재게시·교차게시(bbs_2↔bbs_3, pap↔francezone)
+> 를 알림·지도에서 모두 제외**한다. zip/면적/가격 중 하나라도 없으면 지문 None →
+> 콘텐츠 dedup 생략(ID-only로 폴백, 약한 근거로 다른 집을 합치지 않음).
 
 ### 2. 소스별 polling
 
@@ -354,6 +393,25 @@ curl -s -A "Mozilla/5.0" "https://www.francezone.com/bbs/view.html?idxno=${POST_
 ```python
 import subprocess
 
+# 콘텐츠 de-dup 가드 — 이미 알린 매물의 재게시/교차게시면 여기서 끝.
+# 지문은 분류 결과(canonical zip/면적/가격/방수)로 계산해 소스 무관하게 일치.
+dedup_fp = fingerprint_of({
+    "zip_or_arr": verdict["zip_or_arr"],
+    "area_m2":    verdict["area_m2"],
+    "price_eur":  verdict["price_eur"],
+    "rooms":      verdict.get("rooms"),
+})
+if dedup_fp and dedup_fp in seen_fps:
+    # 같은 집을 이미 알림+지도에 올림 → post_id만 seen 처리하고 알림/listings 생략.
+    sys.stderr.write(json.dumps({
+        "event": "paris-rental-watch.dedup.skip",
+        "fingerprint": dedup_fp, "namespaced_id": nid, "source": source,
+    }, ensure_ascii=False, separators=(",", ":")) + "\n")
+    seen.add(nid)
+    continue   # 다음 매물로 (이 글은 알림/지도 추가 안 함)
+if dedup_fp:
+    seen_fps.add(dedup_fp)
+
 # 지오코딩
 loc_input = location_text or zip_or_arr or "Paris"
 coords = json.loads(subprocess.check_output(
@@ -427,6 +485,7 @@ python3 /home/node/.claude/skills/paris-rental-watch/render_map.py \
 
 ```python
 state["seen_post_ids"] = sorted(seen, reverse=True)
+state["seen_fingerprints"] = sorted(seen_fps)   # 콘텐츠 de-dup 지문 영속화
 state["last_check"] = now_iso()
 state["last_check_by_source"][source] = now_iso()  # 각 소스 처리 후
 json.dump(state, open(STATE,"w"), ensure_ascii=False, indent=2)
@@ -489,6 +548,8 @@ if should_alert:
 | `pap_consec_failures ≥ PAP_FAILURE_THRESHOLD` (기본 3) | Section 6 `evaluate_pap_alert` → Discord 카드 1회 + `mark_pap_alert_sent` (event=`paris-rental-watch.pap.fetch.alert` 별도 로그). 24h dedupe. 다음 성공 시 카운터 reset (dedupe 스탬프는 보존 — 깜빡이 보호) |
 | Geocode 모두 fallback (Paris centroid) | listing 넣되 location_text는 정확히, 사용자가 수정 가능 |
 | Photo mirror 실패 | photo_url=원본 URL fallback |
+| 재게시/교차게시 (같은 집, 새 post_id) | `dedup.fingerprint_of` 지문(`zip\|면적\|가격\|방수`)이 `seen_fps`에 있으면 post_id만 seen 처리, 알림·listings 생략 (`event=paris-rental-watch.dedup.skip` 1-line 로그). 지도도 render 시 지문 1개당 최신 1건만 표시 |
+| 지문 불가 (zip/면적/가격 중 결측) | 콘텐츠 dedup 생략 → ID-only 폴백 (약한 근거로 다른 집 합치지 않음) |
 
 ## Test 모드
 

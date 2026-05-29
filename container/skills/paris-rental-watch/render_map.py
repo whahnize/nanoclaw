@@ -11,6 +11,15 @@ import os
 import sys
 from collections import Counter
 
+# Content de-dup fingerprint — same module the skill uses to skip repost
+# alerts. Import from the skill dir (render_map runs from there in-container;
+# add it to sys.path defensively for standalone runs).
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+try:
+    from dedup import fingerprint_of
+except ImportError:  # dedup.py absent (older deploy) → map keeps ID-only dedup
+    fingerprint_of = None
+
 
 SOURCE_LABEL = {
     "francezone-bbs2": "💬 bbs2",
@@ -1169,7 +1178,47 @@ def load_listings(path: str) -> list[dict]:
                 continue
             seen_keys.add(key)
             out.append(d)
-    return out
+    return _collapse_by_fingerprint(out)
+
+
+def _recency_key(d: dict) -> tuple:
+    """Sort key for 'most recent' within a fingerprint group. post_date
+    (YYYY-MM-DD, present on francezone reposts) dominates; fetched_at ISO
+    breaks ties (and orders pap cards, which carry no post_date)."""
+    return (str(d.get("post_date") or ""), str(d.get("fetched_at") or ""))
+
+
+def _collapse_by_fingerprint(listings: list[dict]) -> list[dict]:
+    """Collapse repost/cross-listing duplicates to one pin per unit.
+
+    Groups by `dedup.fingerprint_of` (zip|area|price|rooms) and keeps only
+    the most recent listing in each group. Listings without a fingerprint
+    (missing zip/area/price) are passed through untouched — never merged on
+    weak evidence. Original input order is preserved for the survivors.
+    """
+    if fingerprint_of is None:
+        return listings
+    # First pass: pick the most-recent listing per fingerprint.
+    best: dict[str, dict] = {}
+    for d in listings:
+        fp = fingerprint_of(d)
+        if not fp:
+            continue
+        if fp not in best or _recency_key(d) > _recency_key(best[fp]):
+            best[fp] = d
+    # Second pass: rebuild in original order. A fingerprinted group emits its
+    # winner once, at the group's first appearance; un-fingerprinted listings
+    # pass through untouched (never merged on weak evidence).
+    result: list[dict] = []
+    emitted: set[str] = set()
+    for d in listings:
+        fp = fingerprint_of(d)
+        if not fp:
+            result.append(d)
+        elif fp not in emitted:
+            result.append(best[fp])
+            emitted.add(fp)
+    return result
 
 
 def make_title_and_footer(listings: list[dict]) -> tuple[str, str, str]:
